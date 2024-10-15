@@ -13,3 +13,4 @@ boto3==1.35.13
 fastapi
 paramiko
 label_studio_sdk
+netifaces
