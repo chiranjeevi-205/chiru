@@ -1,0 +1,230 @@
+# Assuming your config.yaml looks like this:
+models:
+  - name: monkeyDetection
+    endpoint: http://0.0.0.0:8078/detect-monkey
+    keywords:
+      - monkey
+      - Monkey 1
+      - Monkey 2
+      - Monkey 1 eating
+      - Monkey 2 eating
+  - name: birdDetection
+    endpoint: http://0.0.0.0:8078/detect-bird
+    keywords:
+      - bird
+      - Bird 1 Eating
+      - seeds
+      - muskmelon
+      - watermelon
+      - water
+      - dirtywater
+  - name: productDetection
+    endpoint: http://0.0.0.0:8078/detect-product
+    keywords:
+      - person
+      - product
+  - name: automotiveDetection
+    endpoint: http://0.0.0.0:8078/automotive-detection
+
+
+  - name: livestockCount
+    endpoint: http://0.0.0.0:8078/livestock-count
+    keywords:
+      - meat
+  - name: handDetector
+    endpoint: http://0.0.0.0:8078/hand-detector
+    keywords:
+      - meat
+
+  - name: palletDetection
+    endpoint: http://0.0.0.0:8078/pallet-detection
+    keywords:
+      - pallet
+
+  - name: personDetection
+    endpoint: http://0.0.0.0:8078/detect-person
+    keywords:
+      - person
+
+modeltree:
+  - modelname: MonkeyCage14ReID
+    requiredmodel: monkeyDetection
+  - modelname: MonkeyCage15ReID
+    requiredmodel: monkeyDetection
+  - modelname: MonkeyCage18ReID
+    requiredmodel: monkeyDetection
+  - modelname: MonkeyCage2077ReID
+    requiredmodel: monkeyDetection
+  - modelname: MonkeyCage17ReID
+    requiredmodel: monkeyDetection
+  - modelname: MonkeyCage8ReID
+    requiredmodel: monkeyDetection
+  - modelname: watertypeclassification
+    requiredmodel: birdDetection
+  - modelname: LR12ReID
+    requiredmodel: birdDetection
+  - modelname: channel1
+    requiredmodel: birdDetection
+  - modelname: LR3ReID
+    requiredmodel: birdDetection
+  - modelname: LR6ReID
+    requiredmodel: birdDetection
+  - modelname: LR2ReID
+    requiredmodel: birdDetection 
+  - modelname: LR1ReID  
+    requiredmodel: birdDetection
+  - modelname: LR4ReID  
+    requiredmodel: birdDetection
+  
+conditions:
+  - type: presence
+    item: meat
+    activity: Meat Present
+  - type: presence
+    item: bird
+    activity: birdPresent
+
+  - type: presence
+    item: Bird 1 eating
+    activity: Bird 1 Eating
+
+  - type: presence
+    item: Bird 2 eating
+    activity: Bird 2 Eating
+
+  - type: presence
+    item: Bird 1 
+    activity: Bird 1 Present
+  - type: presence
+    item: Bird 2
+    activity: Bird 2 Present
+
+  - type: list
+    items:
+      - seeds
+      - muskmelon
+      - watermelon
+      - foodpresent
+    activity: foodPresent
+
+  - type: presence
+    item: water
+    activity: waterPresent
+
+  - type: list
+    items:
+      - emptyplate
+      - empty plate
+    activity: emptyplatePresent
+  - type: presence
+    item: dirtywater
+    activity: dirtywaterPresent
+
+  - type: presence
+    item: monkey
+    activity: monkeyPresent
+
+  - type: list
+    items: 
+      - "Monkey 1"
+      - "Monkey A"
+    activity: Monkey A Present
+
+  - type: list
+    items: 
+      - "Monkey 2"
+      - "Monkey B"
+    activity: Monkey B Present
+
+  - type: list
+    items: 
+      - "Monkey 3"
+      - "Monkey C"
+    activity: Monkey C Present
+
+  - type: list
+    items: 
+      - "Monkey 1 eating"
+      - "Monkey A eating"
+    activity: Monkey A Eating
+
+  - type: list
+    items: 
+      - "Monkey 2 eating"
+      - "Monkey B eating"
+    activity: Monkey B Eating
+
+  - type: list
+    items: 
+      - "Monkey 3 eating"
+      - "Monkey C eating"
+    activity: Monkey C Eating
+
+  - type: presence
+    item: person
+    activity: personPresent
+
+  - type: presence
+    item: product
+    activity: productPresent
+
+  - type: presence
+    item: "0"
+    activity: "0"
+
+  - type: presence
+    item: "1"
+    activity: "1"
+
+  - type: presence
+    item: "2"
+    activity: "2"
+
+  - type: presence
+    item: "3"
+    activity: "3"
+
+  - type: presence
+    item: "4"
+    activity: "4"
+  - type: presence
+    item: "5"
+    activity: "5"
+
+  - type: presence
+    item: "6"
+    activity: "6"
+  - type: presence
+    item: "L1C1 Pallet Present"
+    activity: "L1C1 Pallet Present"
+  
+  - type: presence
+    item: "L1C2 Pallet Present"
+    activity: "L1C2 Pallet Present"
+  
+  - type: presence
+    item: "L1C3 Pallet Present"
+    activity: "L1C3 Pallet Present"
+  
+  - type: presence
+    item: "L2C1 Pallet Present"
+    activity: "L2C1 Pallet Present"
+  
+  - type: presence
+    item: "L2C2 Pallet Present"
+    activity: "L2C2 Pallet Present"
+  
+  - type: presence
+    item: "L2C3 Pallet Present"
+    activity: "L2C3 Pallet Present"
+
+checkpoints:
+
+  bird_weights: "./checkpoints/birdDetection.pt"
+  water_weights: "./checkpoints/waterclass.pt"
+
+weights:
+  
+  weights_path: ./weights/best.pt
+  config_yaml: ./weights/config_out.yaml
+  
