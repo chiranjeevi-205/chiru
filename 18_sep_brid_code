@@ -1,0 +1,395 @@
+
+from utils.Re_id_funtions.infer_image import ImageInference
+from pymongo import MongoClient
+import yaml
+import json
+import os
+import shutil
+import cv2
+from datetime import datetime, timedelta
+from fastapi import FastAPI
+import numpy as np
+from pymongo import MongoClient
+import yaml
+import requests
+import pandas as pd
+from utils.cv2Operations import cv2_operations
+from utils.directoryOperations import directory_operations
+from ultralytics import YOLO
+from utils.utils import *
+import easyocr
+from pylab import rcParams
+from Config import get_env
+from PIL import Image
+from datetime import datetime, timedelta
+import pytz
+import random
+import time
+from datetime import datetime
+import pytz
+
+import boto3
+from botocore.exceptions import NoCredentialsError
+from pymongo import MongoClient
+import pymongo
+from utils.timeOperations import time_operations
+
+
+class ApiClass:
+
+    def __init__(self,modelInfo) -> None:
+        self.modelbird = YOLO(modelInfo["checkpoints"]["bird_weights"])
+        self.waterclass = YOLO(modelInfo["checkpoints"]["water_weights"])
+        self.present = {}
+        self.cameras = {}
+        self.last_save_time = 0
+        self.config = get_env.Settings()
+        self.weights =modelInfo['weights']['weights_path']
+        self.configs=modelInfo['weights']['config_yaml']
+        self.inferer = ImageInference(self.weights, self.configs)
+
+        self.activity_dict = {}
+
+        for entry in modelInfo["conditions"]:
+            activity = entry["activity"]
+            if "items" in entry:
+                self.activity_dict[activity] = entry["items"]
+            else:
+                self.activity_dict[activity] = [entry["item"]]
+
+        connection_string = self.config.connection_string
+        client = MongoClient(connection_string)
+        database = client["analytics"]
+        collection = database["model"]
+        model_data_frame = pd.DataFrame(list(collection.find()))
+
+        self.reidentification_names = model_data_frame.loc[
+            model_data_frame["modelType"] == "ReIdentification", "name"
+        ].tolist()
+        self.classification_names = model_data_frame.loc[
+            model_data_frame["modelType"] == "classification", "name"
+        ].tolist()
+
+
+    def test_reid(self,file,model_name):
+        result = self.inferer.infer(file)
+        os.remove(file)
+        return result
+
+    def water_classification(self, file):
+        results = self.waterclass(source=file)  # predict on an image
+        names_dict = results[0].names
+        probs = results[0].probs.data.tolist()
+        os.remove(file)
+        return names_dict[np.argmax(probs)]
+    
+    def get_bird_detection(self, file, nextmodel, sourceId, event):
+        detection_output = self.modelbird.predict(source=file, conf=0.25, save=False)[0]
+        detections = detection_output  # Get the first (and only) prediction output
+
+        # Extract detected class indices and their names
+        class_indices = detections.boxes.cls.cpu().numpy().astype(int)
+        class_names = [self.modelbird.names[idx] for idx in class_indices]
+
+        # Get the current timestamp and date for organizing files
+        timestamp = time.strftime("%Y%m%d-%H%M%S")
+        today_date = time.strftime("%Y%m%d")
+
+        # Create the output folder structure (images, labels)
+        output_folder = f"./{today_date}"
+        images_folder = os.path.join(output_folder, "images")
+        labels_folder = os.path.join(output_folder, "labels")
+        folder_name = "Bird_images"
+        os.makedirs(folder_name, exist_ok=True)
+        os.makedirs(images_folder, exist_ok=True)
+        os.makedirs(labels_folder, exist_ok=True)
+
+        # Check if 1 minute has passed since the last save
+        current_time = time.time()
+        save_image = False
+        if current_time - self.last_save_time >= 60:  # 60 seconds = 1 minute
+            save_image = True
+            self.last_save_time = current_time
+
+        # Load the image
+        frame = cv2.imread(file)
+        if frame is None:
+            print(f"Error: Could not read image {file}")
+            return
+
+        # Save the captured frame as an image only if a minute has passed
+        if save_image:
+            image_filename = os.path.join(images_folder, f"{timestamp}.jpg")
+            print("Saving image:", image_filename)
+            cv2.imwrite(image_filename, frame)
+
+        # Extract bounding box data and annotations
+        boxes = detections.boxes.xyxy.cpu().numpy()  # Bounding boxes
+        height, width, _ = frame.shape
+        annotations = []
+
+        for i, box in enumerate(boxes):
+            x1, y1, x2, y2 = map(int, box)
+            class_id = class_indices[i]
+            annotations.append(f"{class_id} {(x1 + x2) / (2 * width)} {(y1 + y2) / (2 * height)} {(x2 - x1) / width} {(y2 - y1) / height}")
+        
+        # Save the annotations only if a minute has passed
+        if save_image:
+            annotations_filename = os.path.join(labels_folder, f"{timestamp}.txt")
+            with open(annotations_filename, "w") as f:
+                f.write("\n".join(annotations) + "\n")
+
+        # Log detected objects
+        print(f"Detected classes in {file}: {class_names}")
+        dir_ops = directory_operations()
+
+        # Handle additional logic for bird and water detection using dir_ops for cropped images
+        things_present = []
+        for i, class_name in enumerate(class_names):
+            saved_image_path = os.path.join(images_folder, f"{i}_{os.path.basename(file)}")
+            if class_name == "waterplate" and nextmodel:
+                relevant_models = set(nextmodel).intersection(self.classification_names)
+                if relevant_models:
+                    dir_ops.crop_and_save_image(file, boxes[i], saved_image_path)  # Use dir_ops for cropped image
+                    water_result = self.water_classification(saved_image_path)
+                    things_present.append(water_result)
+
+            elif class_name == "bird" and nextmodel:
+                bire = os.path.join(folder_name, f"{timestamp}.jpg")
+                
+                cv2.imwrite(bire, frame)
+
+                relevant_models = set(nextmodel).intersection(self.reidentification_names)
+                if relevant_models:
+                    dir_ops.crop_and_save_image(file, boxes[i], saved_image_path)  # Use dir_ops for cropped image
+                    birdname = self.test_reid(file=saved_image_path, model_name=relevant_models.pop())
+                    things_present.append(birdname)
+                    class_names[i] = birdname
+                    things_present.append(f"{birdname} detected")
+
+        print(things_present)
+        return things_present
+
+    # def get_bird_detection(self, file, nextmodel, sourceId, event):
+    #     detection_output = self.modelbird.predict(source=file, conf=0.25, save=False)[0]
+    #     detections = detection_output  # Get the first (and only) prediction output
+
+    #     # Extract detected class indices and their names
+    #     class_indices = detections.boxes.cls.cpu().numpy().astype(int)
+    #     class_names = [self.modelbird.names[idx] for idx in class_indices]
+
+
+    #     # Get the current timestamp and date for organizing files
+    #     timestamp = time.strftime("%Y%m%d-%H%M%S")
+    #     today_date = time.strftime("%Y%m%d")
+
+    #     # Create the output folder structure (images, labels)
+    #     output_folder = f"./{today_date}"
+    #     images_folder = os.path.join(output_folder, "images")
+    #     labels_folder = os.path.join(output_folder, "labels")
+    #     folder_name = "Bird_images"
+    #     os.makedirs(folder_name, exist_ok=True)
+    #     os.makedirs(images_folder, exist_ok=True)
+    #     os.makedirs(labels_folder, exist_ok=True)
+
+    #     # Create a file to save class names
+    #     classes_file = os.path.join(output_folder, "classes.txt")
+    #     if not os.path.exists(classes_file):
+    #         with open(classes_file, "w") as f:
+    #             for class_name in self.modelbird.names.values():
+    #                 f.write(f"{class_name}\n")
+
+    #     # Load the image
+    #     frame = cv2.imread(file)
+    #     if frame is None:
+    #         print(f"Error: Could not read image {file}")
+    #         return
+
+    #     # Save the captured frame as an image
+    #     image_filename = os.path.join(images_folder, f"{timestamp}.jpg")
+        
+        
+    #     print("image filename....................................")
+    #     print(image_filename)
+    #     cv2.imwrite(image_filename, frame)
+    #     # Extract bounding box data and annotations
+    #     boxes = detections.boxes.xyxy.cpu().numpy()  # Bounding boxes
+    #     height, width, _ = frame.shape
+    #     annotations = []
+
+    #     for i, box in enumerate(boxes):
+    #         x1, y1, x2, y2 = map(int, box)
+    #         class_id = class_indices[i]
+    #         annotations.append(f"{class_id} {(x1 + x2) / (2 * width)} {(y1 + y2) / (2 * height)} {(x2 - x1) / width} {(y2 - y1) / height}")
+        
+    #     # Save the annotations in the labels folder
+    #     annotations_filename = os.path.join(labels_folder, f"{timestamp}.txt")
+    #     with open(annotations_filename, "w") as f:
+    #         f.write("\n".join(annotations) + "\n")
+
+    #     # Log detected objects
+    #     print(f"Detected classes in {file}: {class_names}")
+    #     dir_ops = directory_operations()
+
+    #     # Handle additional logic for bird and water detection using dir_ops for cropped images
+    #     things_present = []
+    #     for i, class_name in enumerate(class_names):
+    #         saved_image_path = os.path.join(images_folder, f"{i}_{os.path.basename(file)}")
+    #         if class_name == "waterplate" and nextmodel:
+    #             relevant_models = set(nextmodel).intersection(self.classification_names)
+    #             if relevant_models:
+    #                 dir_ops.crop_and_save_image(file, boxes[i], saved_image_path)  # Use dir_ops for cropped image
+    #                 water_result = self.water_classification(saved_image_path)
+    #                 things_present.append(water_result)
+
+    #         elif class_name == "bird" and nextmodel:
+    #             bire=os.path.join(folder_name,f"{timestamp}.jpg")
+    #             cv2.imwrite(bire,frame)
+
+    #             relevant_models = set(nextmodel).intersection(self.reidentification_names)
+    #             if relevant_models:
+                    
+    #                 dir_ops.crop_and_save_image(file, boxes[i], saved_image_path)  # Use dir_ops for cropped image
+    #                 birdname = self.test_reid(file=saved_image_path, model_name=relevant_models.pop())
+    #                 things_present.append(birdname)
+    #                 class_names[i] = birdname
+    #                 things_present.append(f"{birdname} detected")
+
+    #     print(things_present)
+    #     return things_present
+def reconnect_rtsp(rtsp_url, retry_delay=5):
+    """Attempt to reconnect to the RTSP stream."""
+    print("Attempting to reconnect to the RTSP stream...")
+    cap = None
+    while cap is None or not cap.isOpened():
+        cap = cv2.VideoCapture(rtsp_url)
+        if not cap.isOpened():
+            print(f"Failed to connect. Retrying in {retry_delay} seconds...")
+            time.sleep(retry_delay)
+        else:
+            print("Reconnected to the RTSP stream.")
+    return cap
+
+
+if __name__ == "__main__":
+    config = get_env.Settings()
+    rtsp_url = config.rtsp_url
+    video_path = config.video_path
+    sourceId = config.source_id
+    connection_string = config.connection_string
+    client = MongoClient(connection_string)
+    db = client.analytics  # Use the 'analytics' database
+    source_collection = db.source  # Access the 'source' collection
+    modelsCollection = db.model
+    analytic_collection = db.Analytics
+    
+    # Read the configuration file
+    with open("./Config/apiconfig.yaml", "r") as file:
+        modelInfo = yaml.safe_load(file)
+
+    # Instantiate the ApiClass
+    api_instance = ApiClass(modelInfo)
+
+    # Query the document with the given _id
+    document = source_collection.find_one({"_id": sourceId})
+    doc1 = document.get("models")
+    modelName = []
+    eventslist = []
+    activitieslist = []
+    
+    for i in doc1:
+        model_data = modelsCollection.find_one({"_id": i})
+        if model_data:
+            model_name = model_data.get("name")
+            if model_name:
+                modelName.append(model_name)
+            events = model_data.get("events")
+            if events:
+                eventslist.extend(events)
+            activities = model_data.get("activities")
+            if activities:
+                activitieslist.extend(activities)
+
+    requiredmodels = {}
+    for model in modelInfo["modeltree"]:
+        if model["modelname"] in modelName:
+            if model["requiredmodel"] not in requiredmodels:
+                requiredmodels[model["requiredmodel"]] = [model["modelname"]]
+            else:
+                requiredmodels[model["requiredmodel"]].append(model["modelname"])
+
+    nextmodel = requiredmodels.get(modelName[0], [])
+
+    # Try to open the RTSP stream
+    cap = reconnect_rtsp(rtsp_url)
+    
+    # Get the frames per second (FPS) of the original video stream
+    original_fps = cap.get(cv2.CAP_PROP_FPS)
+    frame_skip = int(original_fps)  # Skip enough frames to achieve 1 FPS
+    frame_number = 0
+
+    while cap.isOpened():
+        ret, frame = cap.read()
+        
+        # Reconnect if unable to read the frame
+        if not ret:
+            print("Lost connection to the RTSP stream. Trying to reconnect...")
+            cap = reconnect_rtsp(rtsp_url)
+            continue
+
+        # Process the frame
+        current_time = time.strftime("%Y%m%d-%H%M%S")
+        file_path = f"temp_frame_{current_time}.jpg"
+        cv2.imwrite(file_path, frame)
+        start_time = time_operations().get_current_time()
+        
+        # Call the get_bird_detection method
+        detected_items = api_instance.get_bird_detection(file_path, nextmodel, sourceId, eventslist)
+        end_time = time_operations().get_current_time()
+        time_diff = (end_time - start_time).total_seconds()
+        
+        print("Detected items:", detected_items)
+
+        # Process detected items and activities
+        activities = []
+        for condition in modelInfo["conditions"]:
+            if condition["type"] == "presence" and condition["item"] in detected_items:
+                activities.append(condition["activity"])
+            elif condition["type"] == "list":
+                for item in condition["items"]:
+                    if item in detected_items:
+                        activities.append(condition["activity"])
+                        break
+
+        activities_ = [activity for activity in activities if activity in activitieslist]
+        events_ = [activity for activity in eventslist if activity in activities_]
+
+        rawAnalytics = {
+            "modelId": doc1,
+            "currentTime": start_time,
+            "startTime": start_time,
+            "endTime": end_time,
+            "zoneId": document['zoneId'],
+            "sourceId": sourceId,
+            "frameno": frame_number,
+            "fps": 1,  # Set to 1 FPS
+            "activities": activities_,
+            "events": events_,
+            "camera_type": document['sourceType'],
+            "tenantId": "LSET",
+            "duration": time_diff,
+        }
+        analytic_collection.insert_one(rawAnalytics)
+        print(rawAnalytics)
+        print("====================================================================")
+
+        # Remove the saved image
+        os.remove(file_path)
+
+        # Skip the required number of frames to achieve 1 FPS
+        for _ in range(frame_skip - 1):
+            cap.grab()  # Grabbing the frame without processing
+
+    cap.release()
+    cv2.destroyAllWindows()
+
